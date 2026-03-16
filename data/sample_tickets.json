@@ -1,0 +1,17 @@
+[
+ {
+   "id": 1,
+   "text": "ERA allowed amount lower than expected contract value for CPT 97110",
+   "resolution": "Contract file outdated"
+ },
+ {
+   "id": 2,
+   "text": "Claim rejected due to missing modifier GP",
+   "resolution": "Add modifier GP before submission"
+ },
+ {
+   "id": 3,
+   "text": "Eligibility check failing for Medicare patient",
+   "resolution": "Insurance payer ID incorrect"
+ }
+]

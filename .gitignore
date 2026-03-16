@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+storage/chroma_db/
+node_modules/
+deploy.sh

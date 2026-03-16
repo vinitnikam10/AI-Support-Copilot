@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-dotenv
+openai
+pydantic
+chromadb
+langchain
+langchain-openai
+pymysql
+sqlalchemy
+cloud-sql-python-connector[pymysql]
