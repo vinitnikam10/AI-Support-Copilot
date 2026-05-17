@@ -45,7 +45,7 @@ export default function TicketPage() {
       {result && (
         <>
           <SummaryCard summary={result.summary} />
-          <ClassificationCard category={result.category} />
+          <ClassificationCard majorCategory={result.major_category} subCategory={result.sub_category} />
           <SimilarTickets tickets={result.similar_tickets} />
           <SuggestedReply reply={result.suggested_reply} />
         </>

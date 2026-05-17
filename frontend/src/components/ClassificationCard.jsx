@@ -1,11 +1,11 @@
-export default function ClassificationCard({ category }) {
+export default function ClassificationCard({ majorCategory, subCategory }) {
 
-  if (!category) return null;
+  if (!majorCategory) return null;
 
   return (
     <div style={{ marginTop: "20px" }}>
       <h3>Issue Category</h3>
-      <p>{category}</p>
+      <p>{majorCategory} → {subCategory}</p>
     </div>
   );
 }
