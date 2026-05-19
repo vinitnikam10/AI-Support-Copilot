@@ -6,13 +6,15 @@ An AI-powered support assistant that helps customer support teams analyze, class
 
 ## What It Does
 
-Paste a support ticket (or a Slack message from a client) and the system automatically:
+Paste a support ticket (or dictate it via the microphone) and the system automatically:
 
 1. **Summarizes** the ticket — extracts the problem, impact, and urgency
 2. **Classifies** it into a hierarchical category (e.g., `Billing → ERA`)
 3. **Finds similar past tickets** using semantic search (RAG)
 4. **Generates a suggested response** informed by the classification, summary, and historical context
 5. **Stores everything** in a cloud database for future retrieval
+
+Voice input uses push-to-talk transcription — tap the mic, speak, tap again to stop, and the transcript fills the input box. You manually review and submit afterward.
 
 ---
 
@@ -41,36 +43,60 @@ React Frontend (Firebase Hosting)
        ▼
 FastAPI Backend (Google Cloud Run)
        │
-       ▼
-AI Processing Pipeline
- ├── Summarizer (OpenAI)
- ├── Classifier (OpenAI + taxonomy validation)
- ├── Embedder (OpenAI text-embedding-3-small)
- ├── RAG Retriever (Chroma Cloud)
- └── Response Generator (OpenAI + full context)
-       │
-       ▼
-Storage
- ├── Google Cloud SQL / MySQL (structured ticket data)
- └── Chroma Cloud (vector embeddings for semantic search)
+       ├── /analyze-ticket  ──┐
+       │                       │
+       └── /transcribe-audio   │
+                               │
+                               ▼
+                     AI Processing Pipeline
+                      ├── Summarizer (OpenAI)
+                      ├── Classifier (OpenAI + taxonomy validation)
+                      ├── Embedder (OpenAI text-embedding-3-small)
+                      ├── RAG Retriever (Chroma Cloud)
+                      └── Response Generator (OpenAI + full context)
+                               │
+                               ▼
+                            Storage
+                      ├── Google Cloud SQL / MySQL (structured ticket data)
+                      └── Chroma Cloud (vector embeddings for semantic search)
 ```
 
-### Request Flow
+### Request flow — `POST /analyze-ticket`
+
+The summarize, classify, and embed steps are independent of each other,
+so they run **in parallel** in a thread pool. The embedding is then reused
+by the retriever and the vector store write — no double-embed.
 
 ```
 POST /analyze-ticket { "text": "..." }
   │
-  ├─ 1. Summarize ticket (OpenAI)
-  ├─ 2. Classify ticket (OpenAI → JSON → validate against taxonomy)
-  ├─ 3. Embed ticket text (OpenAI embeddings)
-  ├─ 4. Query Chroma for similar tickets (vector similarity search)
-  ├─ 5. Fetch similar ticket details from MySQL
-  ├─ 6. Generate response (OpenAI, using summary + classification + similar tickets)
-  ├─ 7. Store ticket + results in MySQL
-  ├─ 8. Store embedding in Chroma
+  ├─ [in parallel]
+  │     ├─ Summarize ticket (OpenAI)
+  │     ├─ Classify ticket (OpenAI → JSON → validate against taxonomy)
+  │     └─ Embed ticket text (OpenAI embeddings)
+  │
+  ├─ Query Chroma for similar tickets (using embedding from above)
+  ├─ Fetch similar ticket details from MySQL
+  ├─ Compress retrieved tickets (truncate to ~300 chars, top-2 only)
+  ├─ Generate response (OpenAI, using summary + classification + similar tickets)
+  ├─ Store ticket + results in MySQL
+  ├─ Store embedding in Chroma (reuses the embedding from above)
   │
   └─ Return: { summary, major_category, sub_category, similar_tickets, suggested_reply }
 ```
+
+### Request flow — `POST /transcribe-audio`
+
+```
+POST /transcribe-audio  (multipart: audio file)
+  │
+  └─ OpenAI gpt-4o-mini-transcribe → { "transcript": "..." }
+```
+
+The frontend records via the browser MediaRecorder API (webm format),
+uploads the blob to the backend, and inserts the returned transcript
+into the ticket input textarea. **It is push-to-talk only** — not realtime
+streaming, not a voice agent.
 
 ---
 
@@ -126,12 +152,32 @@ The system uses semantic search to find similar past tickets:
 ```
 New ticket text
   → OpenAI embedding (text-embedding-3-small, 1536 dimensions)
-  → Chroma Cloud vector search (cosine similarity, top-k results)
+  → Chroma Cloud vector search (cosine similarity, top-2 results)
   → Retrieve full ticket details from MySQL
-  → Feed similar tickets into response generation prompt
+  → Truncate each to ~300 chars to keep prompt context tight
+  → Feed compressed similar tickets into response generation prompt
 ```
 
 This means the AI's suggested responses improve over time as more tickets are stored — each new ticket becomes part of the knowledge base for future queries.
+
+---
+
+## Model Strategy
+
+Models are centralized in [`backend/app/core/config.py`](backend/app/core/config.py) and selected per-task via [`backend/app/core/router.py`](backend/app/core/router.py). All names are env-overridable.
+
+| Purpose | Default Model | Env Var |
+|---|---|---|
+| Summarize / classify / respond (fast path) | `gpt-4o-mini` | `MODEL_FAST` |
+| Difficult tickets (future routing — not used yet) | `gpt-4o` | `MODEL_STRONG` |
+| Embeddings | `text-embedding-3-small` | `MODEL_EMBEDDING` |
+| Audio transcription | `gpt-4o-mini-transcribe` | `MODEL_TRANSCRIBE` |
+
+The router (`pick_model(task, ticket_text)`) currently always returns `MODEL_FAST`. The signature is the seam for future routing logic that may upgrade specific cases to `MODEL_STRONG` based on heuristics like ticket length or ambiguity.
+
+Temperatures are also centralized:
+- `TEMP_DEFAULT = 0.3` — summary, response
+- `TEMP_DETERMINISTIC = 0.0` — classifier (always)
 
 ---
 
@@ -139,9 +185,9 @@ This means the AI's suggested responses improve over time as more tickets are st
 
 | Layer | Technology |
 |---|---|
-| **Frontend** | React, Vite, Axios |
-| **Backend** | Python, FastAPI, Uvicorn |
-| **AI / LLM** | OpenAI API (GPT-4.1-mini for text, text-embedding-3-small for vectors) |
+| **Frontend** | React 19, Vite 7, Tailwind CSS 3, Axios, markdown-to-jsx |
+| **Backend** | Python 3.11, FastAPI, Uvicorn |
+| **AI / LLM** | OpenAI API (gpt-4o-mini for text, text-embedding-3-small for vectors, gpt-4o-mini-transcribe for audio) |
 | **Vector Database** | Chroma Cloud |
 | **Relational Database** | MySQL 8.0 (Google Cloud SQL) |
 | **Hosting (Backend)** | Google Cloud Run |
@@ -156,9 +202,9 @@ support-ai-copilot/
 │
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                    # FastAPI app, routes, CORS
+│   │   ├── main.py                    # FastAPI app, routes (/analyze-ticket, /transcribe-audio), CORS, error handling
 │   │   │
-│   │   ├── api/                       # Route handlers (future expansion)
+│   │   ├── api/                       # Reserved for future route splits
 │   │   │   ├── routes.py
 │   │   │   ├── tickets.py
 │   │   │   └── insights.py
@@ -167,7 +213,9 @@ support-ai-copilot/
 │   │   │   └── ticket_taxonomy.py     # Classification categories
 │   │   │
 │   │   ├── core/
-│   │   │   ├── config.py              # Environment variables (OpenAI, DB)
+│   │   │   ├── config.py              # Models, temperatures, DB URL, OpenAI key (all env-driven)
+│   │   │   ├── router.py              # Model selection seam — pick_model(task, text)
+│   │   │   ├── logging.py             # Shared logger setup (stdout → Cloud Logging)
 │   │   │   ├── database.py            # SQLAlchemy engine (Cloud SQL + local)
 │   │   │   └── openai_client.py       # Shared OpenAI client
 │   │   │
@@ -178,14 +226,15 @@ support-ai-copilot/
 │   │   ├── rag/
 │   │   │   ├── chroma_client.py       # Chroma Cloud connection
 │   │   │   ├── embedder.py            # OpenAI text → vector embedding
-│   │   │   ├── retriever.py           # Semantic search (find similar tickets)
-│   │   │   └── vector_store.py        # Store embeddings in Chroma
+│   │   │   ├── retriever.py           # Semantic search (accepts precomputed embedding)
+│   │   │   └── vector_store.py        # Store embeddings in Chroma (accepts precomputed embedding)
 │   │   │
 │   │   ├── services/
-│   │   │   ├── summarizer.py          # Ticket summarization (OpenAI)
-│   │   │   ├── classifier.py          # Hierarchical classification (OpenAI)
-│   │   │   ├── responder.py           # Response generation (OpenAI + RAG context)
-│   │   │   ├── rag_pipeline.py        # Main pipeline orchestrator
+│   │   │   ├── summarizer.py          # Ticket summarization (OpenAI, via router)
+│   │   │   ├── classifier.py          # Hierarchical classification (OpenAI, deterministic)
+│   │   │   ├── responder.py           # Response generation (OpenAI + compressed RAG context)
+│   │   │   ├── transcriber.py         # Audio → text (OpenAI transcription)
+│   │   │   ├── rag_pipeline.py        # Pipeline orchestrator (parallelized)
 │   │   │   ├── ticket_store.py        # Write ticket to MySQL
 │   │   │   └── ticket_retrieval.py    # Read tickets from MySQL
 │   │   │
@@ -193,7 +242,7 @@ support-ai-copilot/
 │   │       └── text_cleaner.py        # Text preprocessing (future)
 │   │
 │   ├── tests/
-│   │   └── test_pipeline.py           # 24 tests covering every component
+│   │   └── test_pipeline.py           # Component + end-to-end tests
 │   │
 │   ├── storage/                       # Local Chroma DB (dev only)
 │   ├── requirements.txt
@@ -204,19 +253,27 @@ support-ai-copilot/
 │   ├── src/
 │   │   ├── App.jsx
 │   │   ├── main.jsx
-│   │   ├── index.css
+│   │   ├── index.css                  # Tailwind directives + global styles
 │   │   ├── api/
-│   │   │   └── apiClient.js           # Axios client → backend API
+│   │   │   └── apiClient.js           # axios client — VITE_API_URL based
 │   │   ├── components/
-│   │   │   ├── TicketInput.jsx         # Ticket text input form
-│   │   │   ├── SummaryCard.jsx         # Displays AI summary
-│   │   │   ├── ClassificationCard.jsx  # Shows Major → Sub category
-│   │   │   ├── SimilarTickets.jsx      # Lists similar past tickets
-│   │   │   └── SuggestedReply.jsx      # Shows AI-generated response
+│   │   │   ├── TicketInput.jsx        # Ticket text input with integrated mic & submit
+│   │   │   ├── MicButton.jsx          # Push-to-talk recorder → /transcribe-audio
+│   │   │   ├── ResultCard.jsx         # Shared card wrapper for result sections
+│   │   │   ├── SummaryCard.jsx        # Markdown-rendered summary
+│   │   │   ├── ClassificationCard.jsx # Category chips
+│   │   │   ├── SimilarTickets.jsx     # Collapsible similar ticket list
+│   │   │   ├── SuggestedReply.jsx     # Markdown-rendered reply with copy button
+│   │   │   └── SkeletonResults.jsx    # Shimmer loaders shown during analysis
 │   │   └── pages/
-│   │       ├── TicketPage.jsx          # Main page (orchestrates components)
-│   │       └── Dashboard.jsx           # Analytics dashboard (future)
+│   │       ├── TicketPage.jsx         # Main page (orchestrates components)
+│   │       └── Dashboard.jsx          # Analytics dashboard (future)
 │   │
+│   ├── .env.development               # VITE_API_URL → localhost:8000
+│   ├── .env.production                # VITE_API_URL → Cloud Run URL
+│   ├── tailwind.config.js
+│   ├── postcss.config.js
+│   ├── public/favicon.svg             # Brand favicon
 │   ├── package.json
 │   ├── vite.config.js
 │   └── index.html
@@ -228,10 +285,7 @@ support-ai-copilot/
 ├── data/
 │   └── sample_tickets.json            # Sample ticket data for testing
 │
-├── prompts/
-│   ├── summarize_ticket.txt           # Prompt templates (future)
-│   ├── classify_ticket.txt
-│   └── generate_response.txt
+├── prompts/                           # Reserved for future prompt template files
 │
 ├── docs/
 │   └── architecture.md
@@ -256,7 +310,7 @@ support-ai-copilot/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/support-ai-copilot.git
+git clone git@github.com:vinitnikam10/AI-Support-Copilot.git
 cd support-ai-copilot
 ```
 
@@ -264,18 +318,24 @@ cd support-ai-copilot
 
 ```bash
 cd backend
-python -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate
-
 pip install -r requirements.txt
 ```
 
-Create a `.env` file in the `backend/` directory:
+Create a `.env` file in the `backend/` directory (or at the repo root — both are loaded):
 
 ```env
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4.1-mini
 
+# Optional model overrides — defaults shown below
+MODEL_FAST=gpt-4o-mini
+MODEL_STRONG=gpt-4o
+MODEL_EMBEDDING=text-embedding-3-small
+MODEL_TRANSCRIBE=gpt-4o-mini-transcribe
+TEMP_DEFAULT=0.3
+
+CHROMA_HOST=api.trychroma.com
 CHROMA_API_KEY=your_chroma_api_key
 CHROMA_TENANT=your_chroma_tenant
 CHROMA_DATABASE=your_chroma_database
@@ -301,6 +361,8 @@ CREATE TABLE IF NOT EXISTS tickets (
 "
 ```
 
+If connecting to the production Cloud SQL instance from a new machine, you must whitelist your current public IP in the Cloud SQL Console → Connections → Networking → Authorized networks. Local connections bypass this.
+
 ### 4. Run the backend
 
 ```bash
@@ -308,7 +370,7 @@ cd backend
 uvicorn app.main:app --reload
 ```
 
-Backend runs at `http://localhost:8000`
+Backend runs at `http://localhost:8000`. The frontend dev server is configured to hit this URL via `VITE_API_URL` in `.env.development`.
 
 ### 5. Frontend setup
 
@@ -318,57 +380,21 @@ npm install
 npm run dev
 ```
 
-Frontend runs at `http://localhost:5173`
+Frontend runs at `http://localhost:5173`.
 
 ---
 
 ## Testing
 
-The project includes 24 tests covering every component of the pipeline.
-
-### Install test dependencies
+The project includes a test suite covering every component of the pipeline.
 
 ```bash
 cd backend
-pip install pytest httpx
-```
-
-### Run all tests
-
-```bash
+source venv/bin/activate
 pytest tests/test_pipeline.py -v
 ```
 
-### Run tests by component
-
-```bash
-# Config and environment
-pytest tests/test_pipeline.py::TestConfig -v
-
-# Summarizer
-pytest tests/test_pipeline.py::TestSummarizer -v
-
-# Classifier (most critical — tests JSON parsing + taxonomy validation)
-pytest tests/test_pipeline.py::TestClassifier -v
-
-# Embedder + Vector Store + Retriever
-pytest tests/test_pipeline.py::TestEmbedder -v
-pytest tests/test_pipeline.py::TestVectorStore -v
-pytest tests/test_pipeline.py::TestRetriever -v
-
-# Response generator
-pytest tests/test_pipeline.py::TestResponder -v
-
-# MySQL read/write
-pytest tests/test_pipeline.py::TestTicketStore -v
-pytest tests/test_pipeline.py::TestTicketRetrieval -v
-
-# Full end-to-end pipeline
-pytest tests/test_pipeline.py::TestFullPipeline -v
-
-# FastAPI endpoints
-pytest tests/test_pipeline.py::TestAPI -v
-```
+Tests hit the real OpenAI API and Chroma Cloud (not mocked) and write to your configured MySQL DB.
 
 ---
 
@@ -392,7 +418,8 @@ Key deployment flags:
 
 ```bash
 cd frontend
-npm run build
+npm run build       # builds with VITE_API_URL from .env.production
+cd ..
 firebase deploy
 ```
 
@@ -408,8 +435,12 @@ Cloud Run connects to Cloud SQL using the [Cloud SQL Python Connector](https://g
 
 | Variable | Where | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | Backend | OpenAI API key for LLM and embeddings |
-| `OPENAI_MODEL` | Backend | Model name (default: `gpt-4.1-mini`) |
+| `OPENAI_API_KEY` | Backend | OpenAI API key for LLM, embeddings, and transcription |
+| `MODEL_FAST` | Backend | Default model for summary/classify/respond (default: `gpt-4o-mini`) |
+| `MODEL_STRONG` | Backend | Reserved for future routing (default: `gpt-4o`) |
+| `MODEL_EMBEDDING` | Backend | Embedding model (default: `text-embedding-3-small`) |
+| `MODEL_TRANSCRIBE` | Backend | Transcription model (default: `gpt-4o-mini-transcribe`) |
+| `TEMP_DEFAULT` | Backend | Temperature for summary/response (default: `0.3`) |
 | `CHROMA_API_KEY` | Backend | Chroma Cloud API key |
 | `CHROMA_TENANT` | Backend | Chroma Cloud tenant ID |
 | `CHROMA_DATABASE` | Backend | Chroma Cloud database name |
@@ -418,6 +449,7 @@ Cloud Run connects to Cloud SQL using the [Cloud SQL Python Connector](https://g
 | `DB_USER` | Backend (Cloud Run) | Cloud SQL username |
 | `DB_PASSWORD` | Backend (Cloud Run) | Cloud SQL password |
 | `DB_NAME` | Backend (Cloud Run) | Cloud SQL database name |
+| `VITE_API_URL` | Frontend | Backend base URL (set per-environment via `.env.development` and `.env.production`) |
 
 ---
 
@@ -443,7 +475,7 @@ Analyze a support ticket through the full AI pipeline.
 **Response:**
 ```json
 {
-  "summary": "The ERA allowed amount for CPT 97110 differs from the expected contract value...",
+  "summary": "**Problem:** The ERA allowed amount for CPT 97110 differs from the expected contract value...",
   "major_category": "Billing",
   "sub_category": "ERA",
   "similar_tickets": [
@@ -454,18 +486,34 @@ Analyze a support ticket through the full AI pipeline.
 }
 ```
 
+Summary and suggested reply may include lightweight markdown (`**bold**`, lists). The frontend renders this with `markdown-to-jsx`.
+
+### `POST /transcribe-audio`
+
+Transcribe a single audio clip recorded by the frontend mic. **Not** a streaming endpoint — one file in, one transcript out.
+
+**Request:** `multipart/form-data` with a single `audio` field (any OpenAI-supported format — webm, mp3, m4a, wav, etc.)
+
+**Response:**
+```json
+{ "transcript": "I cannot create an appointment in the scheduler" }
+```
+
 ---
 
 ## Future Improvements
 
-- **Slack integration** — automatic ticket ingestion from Slack channels
+- **Confidence scores** — surface classification and response confidence in the UI
+- **Similarity score indicators** — Chroma returns distances; expose them as relevance hints
+- **Active model routing** — `core/router.py` is a stub today; route hard tickets to `MODEL_STRONG`
+- **Slack integration** — auto ticket ingestion from Slack channels
 - **Ticket analytics dashboard** — visualize trends by category, volume, resolution time
 - **Automated routing** — assign tickets to the right team based on classification
 - **Knowledge base integration** — pull from internal docs alongside similar tickets
 - **Structured RAG metadata** — filter similar tickets by category for more relevant retrieval
 - **Feedback loop** — let agents rate suggested responses to improve quality over time
-- **Confidence scores** — show classification and response confidence levels
 - **Multi-tenant support** — serve multiple organizations from a single deployment
+- **Secret management** — move all secrets out of `deploy.sh` into GCP Secret Manager
 
 ---
 

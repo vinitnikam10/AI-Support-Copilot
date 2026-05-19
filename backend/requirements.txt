@@ -1,11 +1,10 @@
 fastapi
 uvicorn
 python-dotenv
+python-multipart
 openai
 pydantic
 chromadb
-langchain
-langchain-openai
 pymysql
 sqlalchemy
 cloud-sql-python-connector[pymysql]

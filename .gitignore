@@ -6,3 +6,5 @@ storage/chroma_db/
 node_modules/
 deploy.sh
 .DS_Store
+.firebase/
+frontend/dist/
