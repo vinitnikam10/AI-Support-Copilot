@@ -1,0 +1,78 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-backend:
+    name: Deploy Backend to Cloud Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/497667180395/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-actions-deploy@support-ai-copilot.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: support-ai-copilot
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy support-ai-backend \
+            --source ./backend \
+            --region us-central1 \
+            --allow-unauthenticated \
+            --add-cloudsql-instances support-ai-copilot:us-central1:support-ai-db \
+            --set-env-vars "INSTANCE_CONNECTION_NAME=support-ai-copilot:us-central1:support-ai-db" \
+            --set-env-vars "DB_USER=root" \
+            --set-env-vars "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" \
+            --set-env-vars "DB_NAME=support_ai" \
+            --set-env-vars "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" \
+            --set-env-vars "CHROMA_API_KEY=${{ secrets.CHROMA_API_KEY }}" \
+            --set-env-vars "CHROMA_TENANT=98b657f1-072c-4d4e-bf74-c13d2b5b455e" \
+            --set-env-vars "CHROMA_DATABASE=ai_support_copilot"
+
+  deploy-frontend:
+    name: Deploy Frontend to Firebase Hosting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/497667180395/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-actions-deploy@support-ai-copilot.iam.gserviceaccount.com
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+        env:
+          VITE_API_URL: https://support-ai-backend-497667180395.us-central1.run.app
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+
+      - name: Deploy to Firebase Hosting
+        run: firebase deploy --only hosting --project support-ai-copilot --non-interactive
+        working-directory: frontend
