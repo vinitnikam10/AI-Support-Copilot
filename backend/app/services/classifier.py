@@ -1,6 +1,8 @@
 import json
+
 from app.core.openai_client import get_openai_client
-from app.core.config import OPENAI_MODEL
+from app.core.config import TEMP_DETERMINISTIC
+from app.core.router import pick_model
 from app.config.ticket_taxonomy import TICKET_TAXONOMY
 
 
@@ -36,17 +38,17 @@ Ticket:
 """
 
     response = client.chat.completions.create(
-        model=OPENAI_MODEL,
+        model=pick_model("classify", ticket_text),
         messages=[{"role": "user", "content": prompt}],
-        temperature=0
+        temperature=TEMP_DETERMINISTIC,
     )
 
     raw = response.choices[0].message.content.strip()
 
     # Strip markdown code fences — LLMs often wrap JSON in ```json ... ```
     if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]   # remove first line (```json)
-        raw = raw.rsplit("```", 1)[0]  # remove closing ```
+        raw = raw.split("\n", 1)[-1]
+        raw = raw.rsplit("```", 1)[0]
         raw = raw.strip()
 
     result = json.loads(raw)

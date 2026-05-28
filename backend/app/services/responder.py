@@ -1,6 +1,8 @@
 from typing import List
+
 from app.core.openai_client import get_openai_client
-from app.core.config import OPENAI_MODEL
+from app.core.config import TEMP_DEFAULT
+from app.core.router import pick_model
 
 
 def generate_response(
@@ -8,7 +10,7 @@ def generate_response(
     summary: str,
     major_category: str,
     sub_category: str,
-    similar_tickets: List[str]
+    similar_tickets: List[str],
 ) -> str:
     client = get_openai_client()
 
@@ -30,8 +32,9 @@ Draft a helpful, professional, and concise support response based on the above c
 """
 
     response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[{"role": "user", "content": prompt}]
+        model=pick_model("respond", ticket_text),
+        messages=[{"role": "user", "content": prompt}],
+        temperature=TEMP_DEFAULT,
     )
 
     return response.choices[0].message.content
